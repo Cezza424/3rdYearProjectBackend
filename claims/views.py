@@ -1,16 +1,16 @@
 from django.shortcuts import render, get_object_or_404
 from django.contrib.auth.models import User, Group
-from django.db.models import Sum
+from django.db.models import Sum, Q
 from django.core.mail import send_mail
 from rest_framework import viewsets, permissions, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django_filters.rest_framework import DjangoFilterBackend
-from .models import Society, UserProfile, Claim, Receipt, Approval
+from .models import Society, Claim, Receipt, Approval, SocietyMembership, BankDetails
 from .serializers import (
-    UserSerializer, GroupSerializer, SocietySerializer, 
-    UserProfileSerializer, ClaimSerializer, ClaimCreateSerializer,
+    UserSerializer, GroupSerializer, SocietySerializer,
+    ClaimSerializer, ClaimCreateSerializer,
     ReceiptSerializer, ApprovalSerializer, BankDetailsSerializer
 )
 from .signals import log_sensitive_data_access
@@ -20,7 +20,21 @@ class IsCommitteeMember(permissions.BasePermission):
     Custom permission to only allow committee members to approve claims.
     """
     def has_permission(self, request, view):
-        return request.user.groups.filter(name='Committee Members').exists()
+        return SocietyMembership.objects.filter(
+            user=request.user,
+            is_committee_member=True
+        ).exists()
+
+    def has_object_permission(self, request, view, obj):
+        society = getattr(obj, 'society', None)
+        if not society:
+            return False
+
+        return SocietyMembership.objects.filter(
+            user=request.user,
+            society=society,
+            is_committee_member=True
+        ).exists()
 
 class IsSUStaff(permissions.BasePermission):
     """
@@ -49,9 +63,6 @@ class GroupViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Group.objects.all()
     serializer_class = GroupSerializer
     permission_classes = [IsAuthenticated]
-
-from .models import BankDetails
-from .serializers import BankDetailsSerializer
 
 class BankDetailsViewSet(viewsets.ModelViewSet):
     """
@@ -134,10 +145,10 @@ class SocietyViewSet(viewsets.ModelViewSet):
             'current_balance': balance
         })
 
-class UserProfileViewSet(viewsets.ReadOnlyModelViewSet):
-    """
+"""class UserProfileViewSet(viewsets.ReadOnlyModelViewSet):
+    
     API endpoint that allows user profiles to be viewed.
-    """
+    
     queryset = UserProfile.objects.all()
     serializer_class = UserProfileSerializer
     permission_classes = [IsAuthenticated]
@@ -147,7 +158,7 @@ class UserProfileViewSet(viewsets.ReadOnlyModelViewSet):
         profile = request.user.profile
         serializer = self.get_serializer(profile)
         return Response(serializer.data)
-
+"""
 class ClaimViewSet(viewsets.ModelViewSet):
     """
     API endpoint that allows claims to be viewed or edited.
@@ -169,7 +180,7 @@ class ClaimViewSet(viewsets.ModelViewSet):
         - Society Members: only their own claims
         - Committee Members: claims from their societies
         - SU Staff: all claims
-        """
+
         user = self.request.user
         base_queryset = Claim.objects.select_related(
             'submitter', 'society', 'saved_bank_details'
@@ -188,7 +199,30 @@ class ClaimViewSet(viewsets.ModelViewSet):
     
         # Society Members can only see their own claims
         return base_queryset.filter(submitter=user)
-    
+
+        """
+        user = self.request.user
+        base_queryset = Claim.objects.select_related(
+            'submitter', 'society', 'saved_bank_details'
+        ).prefetch_related(
+            'receipts', 'approvals'
+        ).order_by('-created_at')
+
+        if user.is_superuser or user.groups.filter(name='SU Staff').exists():
+            return base_queryset
+
+        committee_societies = SocietyMembership.objects.filter(
+            user=user,
+            is_committee_member=True
+        ).values_list('society_id', flat=True)
+
+        if committee_societies.exists():
+            return base_queryset.filter(
+                Q(submitter=user) | Q(society_id__in=committee_societies)
+            )
+
+        return base_queryset.filter(submitter=user)
+
     def notify_claim_status_change(self, claim, status_message, comment=None):
         """Send email notification about claim status change"""
         try:
@@ -215,7 +249,7 @@ class ClaimViewSet(viewsets.ModelViewSet):
             # Log the error but don't break the flow
             print(f"Error sending notification: {e}")
 
-    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated, IsCommitteeMember])
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
     def committee_approval(self, request, pk=None):
         claim = self.get_object()
 
@@ -227,7 +261,11 @@ class ClaimViewSet(viewsets.ModelViewSet):
             )
 
         # Check if user is in the committee of the claim's society
-        if not request.user.profile.societies.filter(id=claim.society.id).exists():
+        if not SocietyMembership.objects.filter(
+            user=request.user,
+            society=claim.society,
+            is_committee_member=True
+        ).exists():
             return Response(
                 {'detail': 'You are not a committee member of this society.'},
                 status=status.HTTP_403_FORBIDDEN
@@ -355,12 +393,17 @@ class ReceiptViewSet(viewsets.ModelViewSet):
         if user.groups.filter(name='SU Staff').exists():
             return Receipt.objects.all()
 
-        # Committee Members can see receipts from their societies
-        if user.groups.filter(name='Committee Members').exists():
-            society_ids = user.profile.societies.values_list('id', flat=True)
-            return Receipt.objects.filter(claim__society__id__in=society_ids)
+        committee_societies = SocietyMembership.objects.filter(
+            user=user,
+            is_committee_member=True
+        ).values_list('society_id', flat=True)
 
-        # Society Members can only see receipts for their own claims
+        if committee_societies.exists():
+            return Receipt.objects.filter(
+                Q(claim__submitter=user) |
+                Q(claim__society_id__in=committee_societies)
+            )
+
         return Receipt.objects.filter(claim__submitter=user)
 
     def perform_create(self, serializer):

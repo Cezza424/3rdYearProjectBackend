@@ -1,25 +1,25 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
-from .models import Society, UserProfile, Claim, Receipt, Approval, BankDetails
+from .models import Society, Claim, Receipt, Approval, BankDetails, SocietyMembership
 
+"""
 class UserProfileInline(admin.StackedInline):
     model = UserProfile
     can_delete = False
     verbose_name_plural = 'profile'
     filter_horizontal = ('societies',)
-
+"""
 # Define a new User admin
 class UserAdmin(BaseUserAdmin):
-    inlines = (UserProfileInline,)
     list_display = ('username', 'email', 'first_name', 'last_name', 'is_staff', 'get_societies')
 
     def get_societies(self, obj):
-        try:
-            return ", ".join([s.name for s in obj.profile.societies.all()])
-        except UserProfile.DoesNotExist:
-            return ""
-    get_societies.short_description = 'Societies'
+        societies = SocietyMembership.objects.filter(
+            user=obj,
+            is_committee_member=True
+        ).values_list('society__name', flat=True)
+        return ",".join(societies)
 
 # Re-register UserAdmin
 admin.site.unregister(User)
@@ -89,3 +89,9 @@ class BankDetailsAdmin(admin.ModelAdmin):
             'fields': ('created_at', 'updated_at')
         }),
     )
+
+@admin.register(SocietyMembership)
+class SocietyMembershipAdmin(admin.ModelAdmin):
+    list_display = ('user', 'society', 'is_committee_member')
+    list_filter = ('is_committee_member','society')
+    search_fields = ('user__username', 'society__name')

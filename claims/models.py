@@ -17,14 +17,23 @@ class Society(models.Model):
         verbose_name_plural = "Societies"
 
 from django.core.validators import RegexValidator
-from django.contrib.auth.models import User
+#from django.contrib.auth.models import User
 
-class UserProfile(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
-    societies = models.ManyToManyField(Society, related_name='members', blank=True)
+class SocietyMembership(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='membership')
+    society = models.ForeignKey(Society, on_delete=models.CASCADE)
+    is_committee_member = models.BooleanField(default=False)
 
-    def __str__(self):
-        return f"{self.user.username}'s Profile"
+    class Meta:
+        unique_together = ('user', 'society')
+
+
+#class UserProfile(models.Model):
+#    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
+#    societies = models.ManyToManyField(Society, related_name='members', blank=True)
+#
+#    def __str__(self):
+#        return f"{self.user.username}'s Profile"
 
 from encrypted_field.fields import EncryptedField
 
@@ -179,12 +188,3 @@ class Approval(models.Model):
     def __str__(self):
         return f"{self.approval_stage} - {self.decision} by {self.approver.username}"
 
-# Signal to create UserProfile when a User is created
-@receiver(post_save, sender=User)
-def create_user_profile(sender, instance, created, **kwargs):
-    if created:
-        UserProfile.objects.create(user=instance)
-
-@receiver(post_save, sender=User)
-def save_user_profile(sender, instance, **kwargs):
-    instance.profile.save()

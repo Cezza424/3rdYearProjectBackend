@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User, Group
 from django.db.models import Sum
-from .models import Society, UserProfile, Claim, Receipt, Approval, BankDetails
+from .models import Society, Claim, Receipt, Approval, BankDetails, SocietyMembership
 
 class BankDetailsSerializer(serializers.ModelSerializer):
     account_number_masked = serializers.SerializerMethodField()
@@ -59,13 +59,13 @@ class SocietySerializer(serializers.ModelSerializer):
         model = Society
         fields = ['id', 'name', 'description', 'starting_budget', 'created_at', 'updated_at']
 
-class UserProfileSerializer(serializers.ModelSerializer):
+class SocietyMembershipSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
-    societies = SocietySerializer(many=True, read_only=True)
-    
+    society = SocietySerializer(read_only=True)
+
     class Meta:
-        model = UserProfile
-        fields = ['id', 'user', 'societies']
+        model = SocietyMembership
+        fields = ['id', 'user', 'society', 'is_committee_member']
 
 class ReceiptSerializer(serializers.ModelSerializer):
     class Meta:
@@ -140,7 +140,8 @@ class ClaimCreateSerializer(serializers.ModelSerializer):
         account_name = data.get('account_name')
         account_number = data.get('account_number')
         sort_code = data.get('sort_code')
-        
+
+
         if not saved_details and not (account_name and account_number and sort_code):
             raise serializers.ValidationError("Either saved bank details or one-time bank details must be provided")
         
@@ -164,5 +165,13 @@ class ClaimCreateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     f"Claim amount (£{amount}) exceeds available society balance (£{balance})"
                 )
-        
+
+        society= data.get('society')
+        user = self.context['request'].user
+        if society and not SocietyMembership.objects.filter(
+            user=self.context['request'].user,
+            society=society
+        ).exists():
+            raise serializers.ValidationError("You must be a member of the society to submit a claim")
+
         return data
